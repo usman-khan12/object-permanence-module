@@ -49,8 +49,9 @@ class SpatialMemoryGrid(nn.Module):
         )
         
         # Occupancy predictor - predicts where objects should be
+        # Input: features (feature_dim) + current_pos (2) + future_pos (2) + velocity (2) = feature_dim + 6
         self.occupancy_predictor = nn.Sequential(
-            nn.Linear(feature_dim * 2 + 4, hidden_dim),  # features + position + velocity
+            nn.Linear(feature_dim + 6, hidden_dim),  # features + positions + velocity
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, self.grid_height * self.grid_width),
@@ -224,12 +225,18 @@ class SpatialMemoryGrid(nn.Module):
             future_pos = obj_pos + obj_vel * num_frames_ahead
             
             # Prepare input: features + current_pos + future_pos + velocity
+            # Ensure all tensors are on same device and have same dtype
+            obj_features = obj_features.float()
+            obj_pos = obj_pos.float()
+            future_pos = future_pos.float()
+            obj_vel = obj_vel.float()
+            
             predictor_input = torch.cat([
-                obj_features,
-                obj_pos,
-                future_pos,
-                obj_vel
-            ], dim=-1)  # [batch, feature_dim + 2 + 2 + 2]
+                obj_features,  # [batch, feature_dim]
+                obj_pos,      # [batch, 2]
+                future_pos,   # [batch, 2]
+                obj_vel       # [batch, 2]
+            ], dim=-1)  # [batch, feature_dim + 6]
             
             # Predict occupancy map
             occupancy_flat = self.occupancy_predictor(predictor_input)  # [batch, H*W]
@@ -291,10 +298,13 @@ class SpatialMemoryGrid(nn.Module):
                 grid_conf = self.grid_confidence[b_idx, grid_h, grid_w, :]  # [num_objects]
                 
                 # Match new features to grid features
+                obj_feat_expanded = obj_features[b_idx:b_idx+1, :].expand(self.num_objects, -1)  # [num_objects, feature_dim]
+                grid_coords_expanded = grid_coords[b_idx, obj_idx:obj_idx+1, :].expand(self.num_objects, -1)  # [num_objects, 2]
+                
                 match_input = torch.cat([
-                    obj_features[b_idx:b_idx+1, :].expand(self.num_objects, -1),  # [num_objects, feature_dim]
+                    obj_feat_expanded,  # [num_objects, feature_dim]
                     grid_features,  # [num_objects, feature_dim]
-                    grid_coords[b_idx:b_idx+1, obj_idx:obj_idx+1, :].expand(self.num_objects, -1)  # [num_objects, 2]
+                    grid_coords_expanded  # [num_objects, 2]
                 ], dim=-1)  # [num_objects, feature_dim*2 + 2]
                 
                 match_probs = self.cross_reference(match_input)  # [num_objects, num_objects]
